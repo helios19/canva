@@ -195,20 +195,20 @@ public class FileQueueService extends AbstractQueueService {
         File lock = getLockFile(queue);
         long visibleFrom = (delaySeconds != null) ? DateTime.now().getMillis() + TimeUnit.SECONDS.toMillis(delaySeconds) : 0L;
 
-        try {
-            lock(lock);
+        lock(lock);
 
-            try (PrintWriter pw = getPrintWriter(fileMessages)) {
+        try (PrintWriter pw = getPrintWriter(fileMessages)) {
+
                 // create messageQueue
                 MessageQueue messageQueue = MessageQueue.create(visibleFrom, messageBody);
                 // add messageQueue to file
                 pw.println(messageQueue.writeToString());
-            } finally {
-                unlock(lock);
-            }
-        } catch (IOException | InterruptedException e) {
+
+        } catch (IOException e) {
             throw new QueueServiceException("An error occurred while pushing messages [" + messageBody + "] to file '" + fileMessages.getPath() + "'", e);
         } finally {
+            unlock(lock);
+
             if (visibleFrom > 0L) {
                 // queue to be checked by visibility collector
                 addToVisibleQueueList(queue);
@@ -251,8 +251,9 @@ public class FileQueueService extends AbstractQueueService {
         File lock = getLockFile(queue);
         MessageQueue messageQueue = null;
 
+        lock(lock);
+
         try {
-            lock(lock);
 
             // read list of messages from file
             try (BufferedReader reader = getBufferedReader(fileMessages);
@@ -285,7 +286,7 @@ public class FileQueueService extends AbstractQueueService {
             // replace file messages with new file
             replaceWithNewFile(fileMessages, newFileMessages);
 
-        } catch (IOException | InterruptedException e) {
+        } catch (IOException e) {
             throw new QueueServiceException("An exception occurred while pulling from queue '" + queue + "'", e);
         } finally {
             unlock(lock);
@@ -322,8 +323,9 @@ public class FileQueueService extends AbstractQueueService {
         File newFileMessages = getNewMessagesFile(queue);
         File lock = getLockFile(queue);
 
+        lock(lock);
+
         try {
-            lock(lock);
 
             // read from file messages file and remove line containing receiptHandle
             List<String> linesWithoutReceiptHandle = getLinesFromFileMessages(fileMessages)
@@ -337,7 +339,7 @@ public class FileQueueService extends AbstractQueueService {
             // replace file messages with new file
             replaceWithNewFile(fileMessages, newFileMessages);
 
-        } catch (IOException | InterruptedException e) {
+        } catch (IOException e) {
             throw new QueueServiceException("An exception occurred while deleting receiptHandle '" + receiptHandle + "'", e);
         } finally {
             unlock(lock);
@@ -355,7 +357,7 @@ public class FileQueueService extends AbstractQueueService {
     protected String changeVisibilityAndWriteToFile(Supplier<Stream<String>> streamSupplier, PrintWriter writer, String visibleLineToPull) {
         // retrieve receiptHandle
         final String receiptHandle = retrieveReceiptHandle(visibleLineToPull)
-                .orElseThrow(() -> new IllegalStateException("no receipt id found for record '" + visibleLineToPull + "'"));
+                .orElseThrow(() -> new IllegalStateException("no receipt handle found for record '" + visibleLineToPull + "'"));
 
         streamSupplier
                 .get()
@@ -384,7 +386,7 @@ public class FileQueueService extends AbstractQueueService {
                 .join(recordFields.get(0), visibility, recordFields.get(2), recordFields.get(3), recordFields.get(4));
     }
 
-    private boolean isVisibleLine(String s) {
+    protected boolean isVisibleLine(String s) {
 
         try {
             if (!Strings.isNullOrEmpty(s)) {
@@ -459,13 +461,17 @@ public class FileQueueService extends AbstractQueueService {
         return createFile(new File(canvaDirPath + File.separator + queueName + File.separator + NEW_MESSAGES_FILE_NAME));
     }
 
-    protected void lock(File lock) throws InterruptedException {
+    protected void lock(File lock) {
         // thread lock
         getThreadLock(lock).lock();
 
         // process lock
-        while (!lock.mkdir()) {
-            Thread.sleep(50);
+        try {
+            while (!lock.mkdir()) {
+                Thread.sleep(50);
+            }
+        } catch (InterruptedException e) {
+            throw new QueueServiceException("An exception occurred while creating lock file '" + lock + "'", e);
         }
 
         // keep track of lock file create for shutdown hook daemon thread
@@ -541,8 +547,9 @@ public class FileQueueService extends AbstractQueueService {
                 File newFileMessages = getNewMessagesFile(queue);
                 File lock = getLockFile(queue);
 
+                lock(lock);
+
                 try {
-                    lock(lock);
 
                     List<String> lines = readAllLines(fileMessages)
                             .stream()
@@ -554,7 +561,6 @@ public class FileQueueService extends AbstractQueueService {
                                         && DateTime.now().getMillis() > messageQueue.getVisibility()) {
 
                                     LOG.info("VisibilityMessageMonitor found invisible message : " + messageQueue);
-
 
                                     messageQueue.setVisibility(0L);
                                 }
@@ -571,7 +577,7 @@ public class FileQueueService extends AbstractQueueService {
 
                     getQueueVisibleList().remove(queue);
 
-                } catch (IOException | InterruptedException e) {
+                } catch (IOException e) {
                     LOG.error("An exception occurred while running the visibility collector", e);
                 } finally {
                     unlock(lock);
