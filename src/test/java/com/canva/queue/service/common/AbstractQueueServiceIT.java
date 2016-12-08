@@ -79,7 +79,9 @@ public abstract class AbstractQueueServiceIT {
             };
 
             // execute remover threads
-            executor.execute(workerRemover);
+            if(i % 2 == 0) {
+                executor.execute(workerRemover);
+            }
 
 
         }

@@ -1,19 +1,20 @@
 package com.canva.queue.service.file;
 
+import com.canva.queue.common.exception.QueueServiceException;
 import com.canva.queue.message.MessageQueue;
-import com.canva.queue.service.memory.InMemoryQueueService;
+import com.google.common.base.Splitter;
 import com.google.common.collect.Lists;
+import com.google.common.primitives.Longs;
 import org.joda.time.DateTime;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 import static org.hamcrest.core.Is.is;
@@ -22,6 +23,82 @@ import static org.junit.Assert.*;
 import static org.mockito.BDDMockito.*;
 
 public class FileQueueServiceTest {
+
+    @Test
+    public void shouldIdentifyVisibleMessage() throws Exception {
+
+        // given
+        FileQueueService fileQueueService = spy(FileQueueService.class);
+        String visibleMessage = "0:0:a8bd335e-e202-4bf2-aff7-b94a5a12571f:1e894d74-a39a-4707-b0a7-f3b444960139:message body test";
+        long pastTimestamp = DateTime.now().minusSeconds(1).getMillis();
+        String visibleAgainMessage = "0:" + pastTimestamp + ":a8bd335e-e202-4bf2-aff7-b94a5a12571f:1e894d74-a39a-4707-b0a7-f3b444960139:message body test";
+        long futureTimestamp = DateTime.now().plusMinutes(5).getMillis();
+        String invisibleMessage = "0:" + futureTimestamp + ":a8bd335e-e202-4bf2-aff7-b94a5a12571f:1e894d74-a39a-4707-b0a7-f3b444960139:message body test";
+
+        // when
+        boolean vm = fileQueueService.isVisibleLine(visibleMessage);
+        boolean vam = fileQueueService.isVisibleLine(visibleAgainMessage);
+        boolean ivm = fileQueueService.isVisibleLine(invisibleMessage);
+
+        // then
+        assertTrue(vm);
+        assertTrue(vam);
+        assertFalse(ivm);
+    }
+
+    @Test
+    public void shouldValidateMessages() throws Exception {
+
+        // given
+        FileQueueService fileQueueService = spy(FileQueueService.class);
+        String validMessage = "0:0:a8bd335e-e202-4bf2-aff7-b94a5a12571f:1e894d74-a39a-4707-b0a7-f3b444960139:message body test";
+        String invalidMessage = "0:invalid message:";
+
+        // when
+        String message = fileQueueService.validateMessage(validMessage);
+
+        try {
+            fileQueueService.validateMessage(invalidMessage);
+            fail("should not go further and throw an exception");
+        } catch (IllegalArgumentException e) {
+            assertEquals(e.getMessage(), "message line invalid '0:invalid message:'");
+        }
+
+        // then
+        assertEquals(validMessage, message);
+    }
+
+    @Test
+    public void shouldUpdateMessageVisibility() throws Exception {
+
+        // given
+        FileQueueService fileQueueService = spy(FileQueueService.class);
+        String validMessage = "0:0:a8bd335e-e202-4bf2-aff7-b94a5a12571f:1e894d74-a39a-4707-b0a7-f3b444960139:message body test";
+
+        // when
+        String resetMessage = fileQueueService.updateMessageVisibility(validMessage, 10);
+
+        // then
+        List<String> recordFields = Lists.newArrayList(Splitter.on(":").split(resetMessage));
+
+        assertTrue(Longs.tryParse(recordFields.get(1)) >= (DateTime.now().getMillis()));
+    }
+
+    @Test
+    public void shouldRetrieveMessageId() throws Exception {
+
+        // given
+        FileQueueService fileQueueService = spy(FileQueueService.class);
+        String messageId = "1e894d74-a39a-4707-b0a7-f3b444960139";
+        String message = "0:0:a8bd335e-e202-4bf2-aff7-b94a5a12571f:" + messageId + ":message body test";
+
+        // when
+        Optional<String> messageIdFound = fileQueueService.retrieveMessageId(message);
+
+        // then
+
+        assertEquals(messageId, messageIdFound.get());
+    }
 
     @Test
     public void shouldPushMessageToQueueWhenDelayQueueUrlAndMessageBodyAreValid() throws Exception {
@@ -49,7 +126,6 @@ public class FileQueueServiceTest {
         // then
         verify(fileQueueService).getMessagesFile("MyQueue");
         verify(fileQueueService).getLockFile("MyQueue");
-        then(fileQueueService).should(times(1)).addToVisibleQueueList("MyQueue");
         then(fileQueueService).should(times(1)).lock(any());
         then(fileQueueService).should(times(1)).unlock(any());
 
@@ -65,7 +141,6 @@ public class FileQueueServiceTest {
 
         // given
         FileQueueService fileQueueService = spy(FileQueueService.class);
-        PrintWriter mockPrintWriter = mock(PrintWriter.class);
 
         // when
         String queueUrl = null;
@@ -82,7 +157,6 @@ public class FileQueueServiceTest {
         // then
         then(fileQueueService).should(times(0)).lock(any());
         then(fileQueueService).should(times(0)).getPrintWriter(any());
-        then(fileQueueService).should(times(0)).addToVisibleQueueList(any());
     }
 
     @Test
@@ -100,13 +174,40 @@ public class FileQueueServiceTest {
             fileQueueService.push(queueUrl, delays, messageBody);
             fail("should not push message if queueUrl is invalid");
         } catch (IllegalArgumentException e) {
-            assertEquals(e.getMessage(), "queueName must not be null");
+            assertEquals("queueName must not be empty", e.getMessage());
         }
 
         // then
         then(fileQueueService).should(times(0)).lock(any());
         then(fileQueueService).should(times(0)).getPrintWriter(any());
-        then(fileQueueService).should(times(0)).addToVisibleQueueList(any());
+    }
+
+    @Test
+    public void shouldNotPushMessageAndThrowQueueServiceExceptionWhenIOExceptionOccurred() throws Exception {
+
+        // given
+        FileQueueService fileQueueService = spy(FileQueueService.class);
+
+        doThrow(IOException.class).when(fileQueueService).getPrintWriter(any());
+        doNothing().when(fileQueueService).lock(any());
+        doNothing().when(fileQueueService).unlock(any());
+
+        // when
+        String queueUrl = "http://sqs.us-east-2.amazonaws.com/123456789012/MyQueue";
+        Integer delays = null;
+        String messageBody = "message body test";
+
+        try {
+            fileQueueService.push(queueUrl, delays, messageBody);
+            fail("should not push message if queueUrl is invalid");
+        } catch (QueueServiceException e) {
+            assertEquals(e.getMessage(), "An error occurred while pushing messages [message body test] to file 'null/MyQueue/messages'");
+        }
+
+        // then
+        then(fileQueueService).should(times(1)).lock(any());
+        then(fileQueueService).should(times(1)).unlock(any());
+        then(fileQueueService).should(times(1)).getPrintWriter(any());
     }
 
     @Test
@@ -135,7 +236,6 @@ public class FileQueueServiceTest {
         // then
         verify(fileQueueService).getMessagesFile("MyQueue");
         verify(fileQueueService).getLockFile("MyQueue");
-        then(fileQueueService).should(times(0)).addToVisibleQueueList("MyQueue");
         then(fileQueueService).should(times(1)).lock(any());
         then(fileQueueService).should(times(1)).unlock(any());
 
@@ -175,7 +275,6 @@ public class FileQueueServiceTest {
         // then
         verify(fileQueueService).getMessagesFile("MyQueue");
         verify(fileQueueService).getLockFile("MyQueue");
-        then(fileQueueService).should(times(1)).addToVisibleQueueList("MyQueue");
         then(fileQueueService).should(times(1)).lock(any());
         then(fileQueueService).should(times(1)).unlock(any());
         then(fileQueueService).should(times(1)).changeVisibilityAndWriteToFile(any(), any(), any());
@@ -197,7 +296,8 @@ public class FileQueueServiceTest {
         PrintWriter mockPrintWriter = mock(PrintWriter.class);
         BufferedReader mockReader = mock(BufferedReader.class);
         File mockFile = mock(File.class);
-        String line = "0:1480950771794:a8bd335e-e202-4bf2-aff7-b94a5a12571f:1e894d74-a39a-4707-b0a7-f3b444960139:message body test";
+        // invisible message with visibility timeout set to 1 hour in the future
+        String line = "0:" + DateTime.now().plusHours(1).getMillis() + ":a8bd335e-e202-4bf2-aff7-b94a5a12571f:1e894d74-a39a-4707-b0a7-f3b444960139:message body test";
 
         doReturn(mockPrintWriter).when(fileQueueService).getPrintWriter(any());
         doReturn(mockReader).when(fileQueueService).getBufferedReader(any());
@@ -206,6 +306,7 @@ public class FileQueueServiceTest {
         doReturn(mockFile).when(fileQueueService).getLockFile(any());
         doNothing().when(fileQueueService).lock(any());
         doNothing().when(fileQueueService).unlock(any());
+        doNothing().when(fileQueueService).replaceWithNewFile(any(), any());
         when(mockReader.lines()).thenReturn(Stream.of(line));
 
         // when
@@ -217,7 +318,6 @@ public class FileQueueServiceTest {
         // then
         verify(fileQueueService).getMessagesFile("MyQueue");
         verify(fileQueueService).getLockFile("MyQueue");
-        then(fileQueueService).should(times(1)).addToVisibleQueueList("MyQueue");
         then(fileQueueService).should(times(1)).lock(any());
         then(fileQueueService).should(times(1)).unlock(any());
         then(fileQueueService).should(times(0)).changeVisibilityAndWriteToFile(any(), any(), any());
@@ -248,7 +348,34 @@ public class FileQueueServiceTest {
         then(fileQueueService).should(times(0)).lock(any());
         then(fileQueueService).should(times(0)).unlock(any());
         then(fileQueueService).should(times(0)).getPrintWriter(any());
-        then(fileQueueService).should(times(0)).addToVisibleQueueList(any());
+        then(fileQueueService).should(times(0)).changeVisibilityAndWriteToFile(any(), any(), any());
+        then(fileQueueService).should(times(0)).replaceWithNewFile(any(), any());
+    }
+
+    @Test
+    public void shouldNotPullMessageAndThrowQueueServiceExceptionWhenIOExceptionOccurred() throws Exception {
+
+        // given
+        FileQueueService fileQueueService = spy(FileQueueService.class);
+
+        doThrow(IOException.class).when(fileQueueService).getPrintWriter(any());
+        doNothing().when(fileQueueService).lock(any());
+        doNothing().when(fileQueueService).unlock(any());
+
+        // when
+        String queueUrl = "http://sqs.us-east-2.amazonaws.com/123456789012/MyQueue";
+
+        try {
+            fileQueueService.pull(queueUrl);
+            fail("should not push message if queueUrl is invalid");
+        } catch (QueueServiceException e) {
+            assertEquals(e.getMessage(), "An exception occurred while pulling from queue 'MyQueue'");
+        }
+
+        // then
+        then(fileQueueService).should(times(1)).lock(any());
+        then(fileQueueService).should(times(1)).unlock(any());
+        then(fileQueueService).should(times(1)).getPrintWriter(any());
         then(fileQueueService).should(times(0)).changeVisibilityAndWriteToFile(any(), any(), any());
         then(fileQueueService).should(times(0)).replaceWithNewFile(any(), any());
     }
@@ -318,6 +445,36 @@ public class FileQueueServiceTest {
     }
 
     @Test
+    public void shouldNotDeleteMessageAndThrowQueueServiceExceptionWhenIOExceptionOccurred() throws Exception {
+
+        // given
+        FileQueueService fileQueueService = spy(FileQueueService.class);
+
+        doThrow(IOException.class).when(fileQueueService).getLinesFromFileMessages(any());
+        doNothing().when(fileQueueService).lock(any());
+        doNothing().when(fileQueueService).unlock(any());
+
+        // when
+        String queueUrl = "http://sqs.us-east-2.amazonaws.com/123456789012/MyQueue";
+        String receiptHandle = "a8bd335e-e202-4bf2-aff7-b94a5a12571f";
+
+        try {
+            fileQueueService.delete(queueUrl, receiptHandle);
+            fail("should not push message if queueUrl is invalid");
+        } catch (QueueServiceException e) {
+            assertEquals(e.getMessage(), "An exception occurred while deleting receiptHandle 'a8bd335e-e202-4bf2-aff7-b94a5a12571f'");
+        }
+
+        // then
+        then(fileQueueService).should(times(1)).lock(any());
+        then(fileQueueService).should(times(1)).unlock(any());
+        then(fileQueueService).should(times(1)).getLinesFromFileMessages(any());
+        then(fileQueueService).should(times(0)).writeLinesToNewFile(any(), any());
+        then(fileQueueService).should(times(0)).replaceWithNewFile(any(), any());
+    }
+
+/*
+    @Test
     public void shouldResetMessageVisibility() throws Exception {
 
         // given
@@ -376,5 +533,5 @@ public class FileQueueServiceTest {
         assertThat(argumentCaptor.getValue().get(1), is(expectedMessageAfterVisibilityReset));
 
     }
-
+*/
 }

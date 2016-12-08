@@ -1,7 +1,7 @@
 package com.canva.queue.common.exception;
 
 /**
- * Global Queue service unchecked exception class.
+ * Global Queue Service unchecked exception class.
  */
 public class QueueServiceException extends RuntimeException {
     public QueueServiceException() {

@@ -52,10 +52,7 @@ public abstract class AbstractQueueService implements QueueService {
      * the inaccessibility period of a message, which after elapsed, must be reset to {@code 0L}.
      *
      * <p>The {@link AbstractVisibilityMonitor} implementation classes are thread-safe watchers that can run concurrently
-     * with other threads operating on the {@link QueueService} public methods (push, pull, delete). They run on a per
-     * queueName basis, locking each queue using a thread lock and a process lock file. When running on a given queue,
-     * all operations executed by other threads are suspended until both locks are released. Note that, any operations
-     * carried out on other queues are meanwhile un-impacted and can be run concurrently.
+     * with other threads operating on the {@link QueueService} public methods (push, pull, delete).
      */
     protected abstract class AbstractVisibilityMonitor implements Runnable {
 

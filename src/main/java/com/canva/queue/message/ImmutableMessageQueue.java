@@ -36,6 +36,7 @@ public final class ImmutableMessageQueue extends MessageQueue implements Seriali
     }
 
     public static ImmutableMessageQueue of(MessageQueue messageQueue) {
+        requireNonNull(messageQueue);
         return new ImmutableMessageQueue(
                 messageQueue.getRequeueCount(),
                 messageQueue.getReceiptHandle(),

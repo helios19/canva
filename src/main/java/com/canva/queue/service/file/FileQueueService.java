@@ -11,7 +11,9 @@ import com.google.common.base.Strings;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Lists;
+import com.google.common.primitives.Longs;
 import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -21,7 +23,6 @@ import java.io.*;
 import java.nio.file.Files;
 import java.util.List;
 import java.util.NoSuchElementException;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -38,48 +39,40 @@ import static java.util.Objects.requireNonNull;
 import static org.apache.commons.lang3.ObjectUtils.defaultIfNull;
 
 /**
- * Queue Service class providing standard operations to push, pull and remove message from a file-based FIFO Queue.
+ * Queue Service class providing standard operations to push, pull and remove messages from a file-based FIFO Queue.
  *
  * <p>This class creates a set of files and directories under {@code /home/.canva} by default (cf. {@link #DEFAULT_CANVA_DIR})
- * which can be overridden using {@link FileQueueService#FileQueueService(String, Integer, boolean, boolean)} constructor.
+ * which can be overridden using {@link FileQueueService#FileQueueService(String, Integer, boolean)} constructor.
  * This service class works on a {@code queueName} basis whereby each queue is stored under its own directory
  * (e.g {@code /home/.canva/myqueue} containing messages file ({@code /home/.canva}/myqueue/messages) and lock file
  * ({@code /home/.canva}/myqueue/.lock).
  *
  * <p>Two level of locks are used in this class, one for threads and another for processes making it usable in a
  * multi-vm environment. The thread lock strategy is based on a list of locks per queue name stored in a concurrent
- * {@link #lockFiles} list. As a result, this class service can be used concurrently by multiple threads that won't block
+ * {@link #threadLockMap} map. As a result, this class service can be used concurrently by multiple threads that won't block
  * when working on different queues. However, when trying to access the same queue file, a pessimistic lock is applied
  * based on {@link ReentrantLock} locking strategy. In addition, a process lock is being used so that the queue files
- * can be accessed by several VMs. In order to make the queue files inter-process safe, a file lock per queue is created
+ * can safely be accessed by several VMs. In order to make the queue files inter-process safe, a file lock per queue is created
  * and removed at the end of each operation (push, pull, delete). When a lock file is created and used by a process
  * the other processes working on the same queue, will run in a sleep loop (thread/process spinning approach) until
  * the lock is released (cf. file.mkdir() lock strategy).<br>
  *
- * <p>This class enables two additional daemon threads used for either resetting the messages visibility according to
- * the default {@link com.canva.queue.service.file.FileQueueService#visibilityTimeoutInSecs}, or for cleaning up
- * any pending lock files left when exiting abruptly the program.
+ * <p>This class enables a daemon thread used for cleaning up any pending lock files left when exiting
+ * abruptly the program.
  *
- * <p>Note that these two threads can be turned off when invoking the constructor of this class through
- * {@link com.canva.queue.service.file.FileQueueService#FileQueueService(String, Integer, boolean, boolean)}.
+ * <p>Note that this thread can be turned off when invoking the constructor of this class through
+ * {@link FileQueueService#FileQueueService(String, Integer, boolean)}.
  *
- * <p>The {@link VisibilityMessageMonitor} and {@link FileQueueService.FileLockShutdownHook} can also
- * but triggered separately using the following code snippet:<br>
+ * <p>The {@link FileQueueService.FileLockShutdownHook} can also but triggered separately using the following code snippet:<br>
  *
  * <pre>{@code
  *
- * // run visibility message collector
- * Thread visibilityChecker = new Thread(new VisibilityMessageMonitor(), "fileQueueService-visibilityCollector");
- * visibilityChecker.setDaemon(true);
- * visibilityChecker.start();
- *
  * // Add shutdown hook to release lock when application shutdown
- * FileLockShutdownHook shutdownHook = new FileLockShutdownHook();
- * Runtime.getRuntime().addShutdownHook(new Thread(new FileLockShutdownHook(), "fileQueueService-shutdownHook"));
+ * FileQueueService.FileLockShutdownHook shutdownHook = new FileQueueService().new FileLockShutdownHook();
+ * Runtime.getRuntime().addShutdownHook(new Thread(shutdownHook, "fileQueueService-shutdownHook"));
  * }</pre>
  *
  * @see QueueService
- * @see FileQueueService.FileLockShutdownHook
  * @see FileQueueService.FileLockShutdownHook
  */
 public class FileQueueService extends AbstractQueueService {
@@ -111,12 +104,6 @@ public class FileQueueService extends AbstractQueueService {
      */
     private CopyOnWriteArrayList<File> lockFiles = Lists.newCopyOnWriteArrayList();
     /**
-     * Concurrent list used for storing queue names accessed by this particular {@link FileQueueService} instance.
-     * This list is checked by {@link VisibilityMessageMonitor} thread when running its collection cycles to target
-     * specifically the queue files created during the live of this Queue Service instance.
-     */
-    private CopyOnWriteArrayList<String> queueVisibleList = Lists.newCopyOnWriteArrayList();
-    /**
      * Concurrent map storing thread lock instance and related queue name pairs. It helps making this class thread-safe
      * by allowing multiple threads working on different queue to run concurrently without blocking.
      */
@@ -133,16 +120,14 @@ public class FileQueueService extends AbstractQueueService {
     }
 
     /**
-     * Creates a {@link FileQueueService} instance given {@code path}, {@code timeoutInSecs}, {@code runVisibilityCollector}
-     * and {@code runShutdownHook} arguments. The latter two arguments are used to run the visibility monitor and
-     * shutdown hook to clean up pending lock files.
+     * Creates a {@link FileQueueService} instance given {@code path}, {@code timeoutInSecs} and {@code runShutdownHook}
+     * arguments. The latter argument is used to run the shutdown hook that cleans up pending lock files.
      *
      * @param baseDirPath  Path used to initialize the canva base director
      * @param visibilityTimeoutInSecs  Visibility timeout in seconds
-     * @param runVisibilityCollector  Boolean indicating if visible collector should be started
      * @param addShutdownHook  Boolean indicating if file lock shutdown hook should be added
      */
-    public FileQueueService(String baseDirPath, Integer visibilityTimeoutInSecs, boolean runVisibilityCollector, boolean addShutdownHook) {
+    public FileQueueService(String baseDirPath, Integer visibilityTimeoutInSecs, boolean addShutdownHook) {
         this.canvaDirPath = !StringUtils.isEmpty(baseDirPath) ? baseDirPath : DEFAULT_CANVA_DIR;
         this.visibilityTimeoutInSecs = defaultIfNull(visibilityTimeoutInSecs, MIN_VISIBILITY_TIMEOUT_SECS);
 
@@ -151,17 +136,6 @@ public class FileQueueService extends AbstractQueueService {
 
         // add shutdown hook to remove lock file left when application shutdown
         addFileLockShutdownHook(addShutdownHook);
-
-        // run visibility message collector
-        runVisibilityMessageCollector(runVisibilityCollector);
-    }
-
-    private void runVisibilityMessageCollector(boolean runVisibilityCollector) {
-        if(runVisibilityCollector) {
-            Thread visibilityChecker = new Thread(new VisibilityMessageMonitor(), "fileQueueService-visibilityCollector");
-            visibilityChecker.setDaemon(true);
-            visibilityChecker.start();
-        }
     }
 
     private void addFileLockShutdownHook(boolean addShutdownHook) {
@@ -180,7 +154,7 @@ public class FileQueueService extends AbstractQueueService {
      *
      * <p>This method uses a thread and process lock strategy to apply and support concurrency. The thread lock is
      * using a concurrent map that relates a {@link ReentrantLock} lock instance to a specific queue name. When invoking
-     * this method, a thread and process locks are applied on a per-queue basis leaving other threads/processes free to
+     * this method, a thread and process lock are applied on a per-queue basis leaving other threads/processes free to
      * access any other queue without blocking.
      *
      * @param queueUrl  Queue url holding the queue name to extract
@@ -208,11 +182,6 @@ public class FileQueueService extends AbstractQueueService {
             throw new QueueServiceException("An error occurred while pushing messages [" + messageBody + "] to file '" + fileMessages.getPath() + "'", e);
         } finally {
             unlock(lock);
-
-            if (visibleFrom > 0L) {
-                // queue to be checked by visibility collector
-                addToVisibleQueueList(queue);
-            }
         }
     }
 
@@ -221,14 +190,15 @@ public class FileQueueService extends AbstractQueueService {
     }
 
     /**
-     * Pulls a message from the top of the queue given {@code queueUrl} argument. The message retrieved must be visible
-     * according to its visibility timestamp (i.e equals to 0L). Any message with a different visibility value will be
-     * skipped and considered invisible.
+     * Pulls a visible message from the top of the queue given {@code queueUrl} argument, returns null otherwise.
+     * The visibility of a message is determined according to its visibility timestamp (i.e equals to 0L or if
+     * visibility < current millis). Any message with a visibility value above current time will be skipped
+     * and considered invisible.
      *
      * <p>When the top message is pulled out from the queue, it is physically still kept in the file messages but with
      * a different visibility timestamp for a short period, or until the message is removed by calling {@link #delete(String, String)}.
-     * During this period the message is considered invisible and cannot be accessed, until it is activated again by the
-     * {@link VisibilityMessageMonitor} when the invisibility period has elapsed.
+     * During this period the message is considered invisible and cannot be accessed. When the invisibility period
+     * has elapsed the message become available again and can be pulled from the queue.
      *
      * <p>When applying a change on the file queue, first this method creates a temporary new file messages with
      * the latest changes and then replaces the existing file messages with the new one.
@@ -290,8 +260,6 @@ public class FileQueueService extends AbstractQueueService {
             throw new QueueServiceException("An exception occurred while pulling from queue '" + queue + "'", e);
         } finally {
             unlock(lock);
-            // queue to be checked by visibility collector
-            addToVisibleQueueList(queue);
         }
 
         return ImmutableMessageQueue.of(messageQueue);
@@ -327,7 +295,7 @@ public class FileQueueService extends AbstractQueueService {
 
         try {
 
-            // read from file messages file and remove line containing receiptHandle
+            // read from messages file and retain all but the line containing the receipt handle
             List<String> linesWithoutReceiptHandle = getLinesFromFileMessages(fileMessages)
                     .stream()
                     .filter(s -> !s.contains(receiptHandle))
@@ -354,73 +322,135 @@ public class FileQueueService extends AbstractQueueService {
         return Files.readAllLines(fileMessages.toPath());
     }
 
-    protected String changeVisibilityAndWriteToFile(Supplier<Stream<String>> streamSupplier, PrintWriter writer, String visibleLineToPull) {
-        // retrieve receiptHandle
-        final String receiptHandle = retrieveReceiptHandle(visibleLineToPull)
-                .orElseThrow(() -> new IllegalStateException("no receipt handle found for record '" + visibleLineToPull + "'"));
+    /**
+     * Changes visibility of a message and writes the updated message line to new file messages. This method will
+     * be useful mainly for the {@link #pull(String)} method after having identified the message line to pull.
+     *
+     * @param streamSupplier Stream supplier instance bound to the current file messages to read from
+     * @param writer Writer instance bound to the new file messages
+     * @param visibleLineToPull Message line to update visibility timestamp and write to file
+     * @throws IllegalStateException If message id cannot be retrieved from message line
+     */
+    protected void changeVisibilityAndWriteToFile(Supplier<Stream<String>> streamSupplier, PrintWriter writer, String visibleLineToPull) {
+        // retrieve message id
+        final String messageId = retrieveMessageId(visibleLineToPull)
+                .orElseThrow(() -> new IllegalStateException("no message identifier found for record '" + visibleLineToPull + "'"));
 
         streamSupplier
                 .get()
                 .forEach(s -> {
 
-                    // update visibility status
-                    if (s.contains(receiptHandle)) {
-                        s = changeVisibility(s, DateTime.now().getMillis());
+                    // update visibility timestamp
+                    if (s.contains(messageId)) {
+                        s = updateMessageVisibility(s, visibilityTimeoutInSecs);
                     }
 
                     // write to file
                     writer.println(s);
                 });
-
-        return receiptHandle;
     }
 
-    protected String changeVisibility(String line, long now) {
-        List<String> recordFields = Lists.newArrayList(Splitter.on(":").split(line));
+    /**
+     * Update message visibility timeout according to {@code delaySeconds} argument and returns the new message line.
+     *
+     * @param messageLine Message line to update
+     * @param delaySeconds  Message visibility delay in seconds
+     * @return New Message line with updated visibility
+     * @throws IllegalArgumentException If message is invalid as per {@link #validateMessage(String)} method
+     */
+    protected String updateMessageVisibility(String messageLine, Integer delaySeconds) {
+        List<String> recordFields = Lists.newArrayList(Splitter.on(":").split(
+                validateMessage(messageLine)));
 
-        long visibility = now + TimeUnit.SECONDS.toMillis(visibilityTimeoutInSecs);
+        long visibility = DateTime.now().getMillis() + TimeUnit.SECONDS.toMillis(delaySeconds);
 
-        // add requeueCount and custom visibility status to the remaining lines
         return Joiner.on(":")
                 .useForNull("")
                 .join(recordFields.get(0), visibility, recordFields.get(2), recordFields.get(3), recordFields.get(4));
     }
 
-    protected boolean isVisibleLine(String s) {
+    /**
+     * Checks the visibility status of a message given {@code messageLine} argument.
+     *
+     * @param messageLine Message line to check visibility
+     * @return Whether the message is visible
+     * @throws IllegalArgumentException If message is invalid as per {@link #validateMessage(String)} method
+     */
+    protected boolean isVisibleLine(String messageLine) {
 
         try {
-            if (!Strings.isNullOrEmpty(s)) {
-                return Objects.equals(Iterables.get(Splitter.on(":").split(s), 1), "0");
+            if (!Strings.isNullOrEmpty(validateMessage(messageLine))) {
+                return DateTime.now().getMillis() >
+                        ObjectUtils.defaultIfNull(
+                                Longs.tryParse(getMessageElement(messageLine, 1)),
+                                0L);
             }
         } catch (NoSuchElementException nee) {
-            LOG.error("An exception occurred while extracting visible status from line '" + s + "'", nee);
+            LOG.error("An exception occurred while extracting visible status from message line '" + messageLine + "'", nee);
         }
 
         return false;
     }
 
-    private Optional<String> retrieveReceiptHandle(String line) {
+    /**
+     * Returns a message element given {@code messageLine} and its {@code position} arguments.
+     *
+     * @param messageLine Message line to check visibility
+     * @param position Message position
+     * @return Message element
+     * @throws IllegalArgumentException If message is invalid as per {@link #validateMessage(String)} method
+     */
+    private String getMessageElement(String messageLine, int position) {
+        return Iterables.get(Splitter.on(":").split(validateMessage(messageLine)), position);
+    }
 
-        Optional<String> receiptHandle = Optional.empty();
-
-        if (!Strings.isNullOrEmpty(line)) {
-            receiptHandle = Optional.ofNullable(Iterables.get(Splitter.on(":").split(line), 2));
+    /**
+     * Validates a message given {@code messageLine} argument. This method essetially verifies the length of the message
+     * passed in argument, that must be made of exactly 5 elements colon-separated as follows: "requeuecount:visibility:receipHandle:messageId:messageBody".
+     *
+     * @param messageLine Message line to check visibility
+     * @return Message if valid
+     * @throws IllegalArgumentException If message is invalid
+     */
+    protected String validateMessage(String messageLine) {
+        // check validity of message
+        if(Strings.isNullOrEmpty(messageLine)
+                || Splitter.on(":").splitToList(messageLine).size() != 5) {
+            throw new IllegalArgumentException("message line invalid '" + messageLine + "'");
         }
 
-        return receiptHandle;
+        return messageLine;
+    }
+
+    /**
+     * Retrieves message id from a message line given {@code messageLine} argument.
+     *
+     * @param messageLine Message line to retrieve receipt handle
+     * @return Optional receipt handle
+     * @throws IllegalArgumentException If message is invalid
+     */
+    protected Optional<String> retrieveMessageId(String messageLine) {
+
+        Optional<String> messageId = Optional.empty();
+
+        if (!Strings.isNullOrEmpty(validateMessage(messageLine))) {
+            messageId = Optional.ofNullable(getMessageElement(messageLine, 3));
+        }
+
+        return messageId;
 
     }
 
     /**
-     * Replace one file with another given {@code fileMessages} and {@code newFileMessages} arguments.
+     * Replaces one file with another given {@code fileMessages} and {@code newFileMessages} arguments.
      *
      * @param fileMessages File messages to be replaced
      * @param newFileMessages New file messages to use
      * @throws IOException Exception thrown in case an issue occurred while replacing the files
      */
     protected void replaceWithNewFile(File fileMessages, File newFileMessages) throws IOException {
-        Objects.requireNonNull(fileMessages, "Messages file must not be null");
-        Objects.requireNonNull(newFileMessages, "Temp messages file must not be null");
+        requireNonNull(fileMessages, "Messages file must not be null");
+        requireNonNull(newFileMessages, "Temp messages file must not be null");
 
         // delete initial messages file
         Files.deleteIfExists(fileMessages.toPath());
@@ -432,6 +462,14 @@ public class FileQueueService extends AbstractQueueService {
         Files.deleteIfExists(new File(newFileMessages.getPath()).toPath());
     }
 
+    /**
+     * Returns a lock file instance given the {@code queueName} argument. This method creates the related queue directory
+     * if it doesn't exist. The concrete creation of the lock file on disk is left to the {@link #lock(File)} method to enable
+     * inter-process concurrency.
+     *
+     * @param queueName Queue name
+     * @return File lock instance
+     */
     protected File getLockFile(String queueName) {
         checkArgument(!Strings.isNullOrEmpty(queueName), "queueName must not be null");
 
@@ -441,6 +479,13 @@ public class FileQueueService extends AbstractQueueService {
         return new File(canvaDirPath + File.separator + queueName + File.separator + LOCK_DIR_NAME);
     }
 
+    /**
+     * Returns the file messages given the {@cde queueName} argument. This method creates the related queue directory
+     * if it doesn't exist along with the file messages itself on disk if non-existent.
+     *
+     * @param queueName Queue name
+     * @return File messages instance
+     */
     protected File getMessagesFile(String queueName) {
         checkArgument(!Strings.isNullOrEmpty(queueName), "queueName must not be null");
 
@@ -451,6 +496,13 @@ public class FileQueueService extends AbstractQueueService {
         return createFile(new File(canvaDirPath + File.separator + queueName + File.separator + MESSAGES_FILE_NAME));
     }
 
+    /**
+     * Returns the new file messages given the {@cde queueName} argument. This method creates the related queue directory
+     * if it doesn't exist along with the new file messages itself on disk if non-existent.
+     *
+     * @param queueName Queue name
+     * @return File messages instance
+     */
     protected File getNewMessagesFile(String queueName) {
         checkArgument(!Strings.isNullOrEmpty(queueName), "queueName must not be null");
 
@@ -461,6 +513,22 @@ public class FileQueueService extends AbstractQueueService {
         return createFile(new File(canvaDirPath + File.separator + queueName + File.separator + NEW_MESSAGES_FILE_NAME));
     }
 
+    /**
+     * Triggers a thread lock based on a {@link ReentrantLock} instance retrieved from {@link #threadLockMap} map
+     * along with an inter-process lock using the {@link File#mkdir()} method, given a {@code lock} file instance.
+     *
+     * <p>This method uses a pessimistic thread lock per queue that will provide exclusive access to a queue and
+     * its related messages file to the first thread that acquires the lock. Any other threads trying to access
+     * the same queue will block until the lock is released.
+     *
+     * <p>This method uses also a inter-process lock through the {@link File#mkdir()} atomic method, which makes the
+     * program inter-process safe.
+     *
+     * <p>This method also adds the lock file created to a concurrent list {@link #lockFiles} so that it can
+     * be used by the {@link FileLockShutdownHook} to remove any left lock file from disk if the program exits abruptly.
+     *
+     * @param lock File lock instance
+     */
     protected void lock(File lock) {
         // thread lock
         getThreadLock(lock).lock();
@@ -474,10 +542,16 @@ public class FileQueueService extends AbstractQueueService {
             throw new QueueServiceException("An exception occurred while creating lock file '" + lock + "'", e);
         }
 
-        // keep track of lock file create for shutdown hook daemon thread
+        // keep track of lock file created for shutdown hook daemon thread
         lockFiles.add(lock);
     }
 
+    /**
+     * Releases thread and process locks enables by {@link #lock(File)} method. This method also remove the lock file
+     * instance from the concurrent list {@link #lockFiles}.
+     *
+     * @param lock File lock instance
+     */
     protected void unlock(File lock) {
         // process unlock
         lock.delete();
@@ -490,6 +564,12 @@ public class FileQueueService extends AbstractQueueService {
 
     }
 
+    /**
+     * Returns a {@link ReentrantLock} lock instance given the file {@code lock} argument.
+     *
+     * @param lock File lock instance
+     * @return ReentrantLock instance related to the File lock argument
+     */
     private ReentrantLock getThreadLock(File lock) {
         ReentrantLock threadLock = threadLockMap.get(lock.getPath());
 
@@ -499,12 +579,6 @@ public class FileQueueService extends AbstractQueueService {
         }
 
         return threadLock;
-    }
-
-    protected void addToVisibleQueueList(String queue) {
-        if (!Strings.isNullOrEmpty(queue)) {
-            queueVisibleList.add(queue);
-        }
     }
 
     /**
@@ -520,78 +594,6 @@ public class FileQueueService extends AbstractQueueService {
                 lockFiles.stream().map(File::delete);
                 lockFiles.clear();
             }
-        }
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    protected class VisibilityMessageMonitor extends AbstractVisibilityMonitor {
-
-        public VisibilityMessageMonitor() {
-        }
-
-        public VisibilityMessageMonitor(long pauseTimer) {
-            super(pauseTimer);
-        }
-
-        /**
-         * {@inheritDoc}
-         */
-        protected void checkMessageVisibility() {
-            requireNonNull(getQueueVisibleList(), "queueVisibleList variable must not be null");
-
-            getQueueVisibleList().stream().forEach(queue -> {
-
-                File fileMessages = getMessagesFile(queue);
-                File newFileMessages = getNewMessagesFile(queue);
-                File lock = getLockFile(queue);
-
-                lock(lock);
-
-                try {
-
-                    List<String> lines = readAllLines(fileMessages)
-                            .stream()
-                            .map(s -> {
-
-                                MessageQueue messageQueue = MessageQueue.createFromLine(s);
-
-                                if (messageQueue.getVisibility() > 0L
-                                        && DateTime.now().getMillis() > messageQueue.getVisibility()) {
-
-                                    LOG.info("VisibilityMessageMonitor found invisible message : " + messageQueue);
-
-                                    messageQueue.setVisibility(0L);
-                                }
-
-                                return messageQueue.writeToString();
-                            })
-                            .collect(Collectors.toList());
-
-                    // write lines to temp file
-                    writeLinesToNewFile(newFileMessages, lines);
-
-                    // replace file messages with new file
-                    replaceWithNewFile(fileMessages, newFileMessages);
-
-                    getQueueVisibleList().remove(queue);
-
-                } catch (IOException e) {
-                    LOG.error("An exception occurred while running the visibility collector", e);
-                } finally {
-                    unlock(lock);
-                }
-            });
-
-        }
-
-        protected List<String> readAllLines(File fileMessages) throws IOException {
-            return Files.readAllLines(fileMessages.toPath());
-        }
-
-        protected CopyOnWriteArrayList<String> getQueueVisibleList() {
-            return queueVisibleList;
         }
     }
 }

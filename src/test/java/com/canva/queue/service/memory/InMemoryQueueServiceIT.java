@@ -9,8 +9,8 @@ import org.junit.Test;
  */
 public class InMemoryQueueServiceIT extends AbstractQueueServiceIT {
 
-    // Uncomment below annotation to enable test execution
-    //@Test
+    // Uncomment below annotation to run integration test
+    @Test
     public void shouldRunInConcurrencyModeWithMultipleProducersConsumers() throws Exception {
 
         Integer visibilityTimeoutInSecs = 2;

@@ -50,6 +50,29 @@ public class InMemoryQueueServiceTest {
     }
 
     @Test
+    public void shouldNotPushMessageAndThrowExceptionWhenQueueUrlIsInvalid() throws Exception {
+
+        // given
+        InMemoryQueueService inMemoryQueueService = spy(InMemoryQueueService.class);
+
+        // when
+        String queueUrl = "http://sqs.us-east-2.amazonaws.com/123456789012/";
+        Integer delays = 20;
+        String messageBody = "message body test";
+
+        try {
+            inMemoryQueueService.push(queueUrl, delays, messageBody);
+            fail("should not push message if queueUrl is invalid");
+        } catch (IllegalArgumentException e) {
+            assertEquals(e.getMessage(), "queueName must not be empty");
+        }
+
+        // then
+        then(inMemoryQueueService).should(times(1)).fromUrl(any());
+        then(inMemoryQueueService).should(times(0)).getMessagesFromQueue(any());
+    }
+
+    @Test
     public void shouldPullVisibleMessageFromQueue() throws Exception {
 
         // given
@@ -127,6 +150,27 @@ public class InMemoryQueueServiceTest {
     }
 
     @Test
+    public void shouldNotPullMessageAndThrowExceptionWhenQueueUrlIsInvalid() throws Exception {
+
+        // given
+        InMemoryQueueService inMemoryQueueService = spy(InMemoryQueueService.class);
+
+        // when
+        String queueUrl = "http://sqs.us-east-2.amazonaws.com/123456789012/";
+
+        try {
+            inMemoryQueueService.pull(queueUrl);
+            fail("should not push message if queueUrl is invalid");
+        } catch (IllegalArgumentException e) {
+            assertEquals(e.getMessage(), "queueName must not be empty");
+        }
+
+        // then
+        then(inMemoryQueueService).should(times(1)).fromUrl(any());
+        then(inMemoryQueueService).should(times(0)).getMessagesFromQueue(any());
+    }
+
+    @Test
     public void shouldDeleteMessageGivenReceiptHandleArgument() throws Exception {
 
         // given
@@ -178,6 +222,28 @@ public class InMemoryQueueServiceTest {
         then(inMemoryQueueService).should(times(1)).fromUrl(any());
         then(inMemoryQueueService).should(times(0)).getMessagesFromQueue(any());
 
+    }
+
+    @Test
+    public void shouldNotDeleteMessageAndThrowExceptionWhenQueueUrlIsInvalid() throws Exception {
+
+        // given
+        InMemoryQueueService inMemoryQueueService = spy(InMemoryQueueService.class);
+
+        // when
+        String queueUrl = "http://sqs.us-east-2.amazonaws.com/123456789012/";
+        String receiptHandle = "a8bd335e-e202-4bf2-aff7-b94a5a12571f";
+
+        try {
+            inMemoryQueueService.delete(queueUrl, receiptHandle);
+            fail("should not push message if queueUrl is invalid");
+        } catch (IllegalArgumentException e) {
+            assertEquals(e.getMessage(), "queueName must not be empty");
+        }
+
+        // then
+        then(inMemoryQueueService).should(times(1)).fromUrl(any());
+        then(inMemoryQueueService).should(times(0)).getMessagesFromQueue(any());
     }
 
     @Test

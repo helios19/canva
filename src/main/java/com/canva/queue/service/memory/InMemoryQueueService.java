@@ -3,6 +3,7 @@ package com.canva.queue.service.memory;
 import com.canva.queue.common.service.AbstractQueueService;
 import com.canva.queue.message.ImmutableMessageQueue;
 import com.canva.queue.message.MessageQueue;
+import com.google.common.base.Strings;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.logging.Log;
@@ -15,11 +16,12 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 import static org.apache.commons.lang3.ObjectUtils.defaultIfNull;
 
 /**
- * Queue Service class providing standard operations to push, pull and remove messages into a memory-based FIFO Queue.
+ * Queue Service class providing standard operations to push, pull and remove messages from a in-memory FIFO Queue.
  *
  * <p>Messages are stored into a {@link java.util.concurrent.ConcurrentLinkedQueue concurrent FIFO queue} saved into
  * another {@link java.util.concurrent.ConcurrentHashMap concurrent map} keyed by queue name. As a result, this
@@ -29,7 +31,7 @@ import static org.apache.commons.lang3.ObjectUtils.defaultIfNull;
  * <p>This class enables a daemon thread used for resetting the messages visibility according to
  * the default {@link com.canva.queue.service.memory.InMemoryQueueService#visibilityTimeoutInSecs}. This thread can be
  * disabled using the constructor
- * {@link com.canva.queue.service.memory.InMemoryQueueService#InMemoryQueueService(java.lang.Integer, boolean)}.
+ * {@link com.canva.queue.service.memory.InMemoryQueueService#InMemoryQueueService(java.lang.Integer, boolean)} method.
  *
  * @see com.canva.queue.service.QueueService
  * @see com.canva.queue.common.service.AbstractQueueService
@@ -47,18 +49,18 @@ public class InMemoryQueueService extends AbstractQueueService {
     protected InMemoryQueueService() {
     }
 
-    public InMemoryQueueService(boolean runVisibilityCollector) {
-        startVisibilityCollector(runVisibilityCollector);
+    public InMemoryQueueService(boolean runVisibilityMonitor) {
+        startVisibilityMonitor(runVisibilityMonitor);
     }
 
-    public InMemoryQueueService(Integer visibilityTimeoutInSecs, boolean runVisibilityCollector) {
+    public InMemoryQueueService(Integer visibilityTimeoutInSecs, boolean runVisibilityMonitor) {
         this.visibilityTimeoutInSecs = defaultIfNull(visibilityTimeoutInSecs, MIN_VISIBILITY_TIMEOUT_SECS);
         // start message checker
-        startVisibilityCollector(runVisibilityCollector);
+        startVisibilityMonitor(runVisibilityMonitor);
     }
 
-    private void startVisibilityCollector(boolean runVisibilityCollector) {
-        if(runVisibilityCollector) {
+    private void startVisibilityMonitor(boolean runVisibilityMonitor) {
+        if(runVisibilityMonitor) {
             // run visibility message checker
             Thread visibilityMonitor = new Thread(new VisibilityMessageMonitor(), "inMemoryQueueService-visibilityMonitor");
             visibilityMonitor.setDaemon(true);
@@ -97,8 +99,11 @@ public class InMemoryQueueService extends AbstractQueueService {
 
     /**
      * Pulls a message from the top of the queue given {@code queueUrl} argument. The message retrieved must be visible
-     * according to its visibility timestamp (i.e equals to 0L). Any message with a different visibility value will be
+     * according to its visibility timestamp (i.e equals to 0L). Any message with visibility > 0L value will be
      * skipped and considered invisible.
+     *
+     * <p>Note that any other messages with visibility > 0L will be checked by the {@link VisibilityMessageMonitor} and
+     * reset to 0L if their invisibility period has expired.
      *
      * @param queueUrl  Queue url holding the queue name to extract
      * @return  MessageQueue instance made up with message body and receiptHandle identifier used to delete the message
@@ -166,7 +171,7 @@ public class InMemoryQueueService extends AbstractQueueService {
         }
 
         /**
-         * Check and reset the visibility of messages exceeding the timeout. The update done in this method is still safe
+         * Checks and resets the visibility of messages exceeding the timeout. The update done in this method is still safe
          * as when message.getVisibility() > 0L, the message is considered invisible by the system (consumers/producers threads
          * won't see this message), that is, only the {@link VisibilityMessageMonitor} thread will access it and possibly
          * modify it. Thus, the check and reset can safely happen in a non-atomic manner.

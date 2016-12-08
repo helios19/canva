@@ -7,8 +7,12 @@ import com.google.common.collect.Iterables;
 
 import java.io.IOException;
 
+import static com.canva.queue.common.service.StringUtils.requireNonEmpty;
 import static com.google.common.base.Preconditions.checkArgument;
 
+/**
+ * Queue Service class declaring standard operations to push, pull and remove messages from a Queue.
+ */
 public interface QueueService {
 
     /**
@@ -45,30 +49,14 @@ public interface QueueService {
      *
      * @param queueUrl Queue url
      * @return Queue name
+     * @throws IllegalArgumentException If the queue name extracted is invalid
      */
     default String fromUrl(String queueUrl) {
         checkArgument(!Strings.isNullOrEmpty(queueUrl), "queueUrl must not be empty");
 
-        return Iterables.getLast(Splitter.on("/").split(queueUrl), null);
+        return requireNonEmpty(
+                Iterables.getLast(Splitter.on("/").split(queueUrl), null),
+                "queueName must not be empty");
     }
-
-
-
-
-  //
-  // Task 1: Define me.
-  //
-  // This interface should include the following methods.  You should choose appropriate
-  // signatures for these methods that prioritise simplicity of implementation for the range of
-  // intended implementations (in-memory, file, and SQS).  You may include additional methods if
-  // you choose.
-  //
-  // - push
-  //   pushes a message onto a queue.
-  // - pull
-  //   retrieves a single message from a queue.
-  // - delete
-  //   deletes a message from the queue that was received by pull().
-  //
 
 }
