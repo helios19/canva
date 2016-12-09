@@ -288,5 +288,27 @@ public class InMemoryQueueServiceTest {
         then(inMemoryQueueService).should(times(0)).getMessagesFromQueue(any());
     }
 
+    @Test
+    public void shouldNotDeleteMessageAndThrowExceptionWhenReceiptHandleIsNull() throws Exception {
+
+        // given
+        InMemoryQueueService inMemoryQueueService = spy(InMemoryQueueService.class);
+
+        // when
+        String queueUrl = "http://sqs.us-east-2.amazonaws.com/123456789012/";
+        String receiptHandle = null;
+
+        try {
+            inMemoryQueueService.delete(queueUrl, receiptHandle);
+            fail("should not push message if queueUrl is invalid");
+        } catch (NullPointerException e) {
+            assertEquals(e.getMessage(), "receipt handle must not be null");
+        }
+
+        // then
+        then(inMemoryQueueService).should(times(0)).fromUrl(any());
+        then(inMemoryQueueService).should(times(0)).getMessagesFromQueue(any());
+    }
+
 
 }

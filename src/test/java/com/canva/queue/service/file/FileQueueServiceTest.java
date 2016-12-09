@@ -546,6 +546,29 @@ public class FileQueueServiceTest {
     }
 
     @Test
+    public void shouldNotDeleteMessageAndThrowExceptionWhenReceiptHandleIsNull() throws Exception {
+
+        // given
+        FileQueueService fileQueueService = spy(FileQueueService.class);
+
+        // when
+        String queueUrl = "http://sqs.us-east-2.amazonaws.com/123456789012/";
+        String receiptHandle = null;
+
+        try {
+            fileQueueService.delete(queueUrl, receiptHandle);
+            fail("should not push message if queueUrl is invalid");
+        } catch (NullPointerException e) {
+            assertEquals(e.getMessage(), "receipt handle must not be null");
+        }
+
+        // then
+        then(fileQueueService).should(times(0)).lock(any());
+        then(fileQueueService).should(times(0)).unlock(any());
+        then(fileQueueService).should(times(0)).replaceWithNewFile(any(), any());
+    }
+
+    @Test
     public void shouldNotDeleteMessageAndThrowQueueServiceExceptionWhenIOExceptionOccurred() throws Exception {
 
         // given
