@@ -278,8 +278,12 @@ public class FileQueueServiceTest {
 
         // given
         FileQueueService fileQueueService = spy(FileQueueService.class);
+        File mockFile = mock(File.class);
 
         doThrow(IOException.class).when(fileQueueService).getPrintWriter(any());
+        doReturn(mockFile).when(fileQueueService).getNewMessagesFile(any());
+        doReturn(mockFile).when(fileQueueService).getMessagesFile(any());
+        doReturn(mockFile).when(fileQueueService).getLockFile(any());
         doNothing().when(fileQueueService).lock(any());
         doNothing().when(fileQueueService).unlock(any());
 
@@ -292,7 +296,7 @@ public class FileQueueServiceTest {
             fileQueueService.push(queueUrl, delays, messageBody);
             fail("should not push message if queueUrl is invalid");
         } catch (QueueServiceException e) {
-            assertEquals(e.getMessage(), "An error occurred while pushing messages [message body test] to file 'null/MyQueue/messages'");
+            assertEquals(e.getMessage(), "An error occurred while pushing messages [message body test] to file 'null'");
         }
 
         // then
@@ -448,10 +452,16 @@ public class FileQueueServiceTest {
 
         // given
         FileQueueService fileQueueService = spy(FileQueueService.class);
+        File mockFile = mock(File.class);
+        BufferedReader mockReader = mock(BufferedReader.class);
 
         doThrow(IOException.class).when(fileQueueService).getPrintWriter(any());
         doNothing().when(fileQueueService).lock(any());
         doNothing().when(fileQueueService).unlock(any());
+        doReturn(mockFile).when(fileQueueService).getNewMessagesFile(any());
+        doReturn(mockFile).when(fileQueueService).getMessagesFile(any());
+        doReturn(mockFile).when(fileQueueService).getLockFile(any());
+        doReturn(mockReader).when(fileQueueService).getBufferedReader(any());
 
         // when
         String queueUrl = "http://sqs.us-east-2.amazonaws.com/123456789012/MyQueue";
@@ -540,8 +550,12 @@ public class FileQueueServiceTest {
 
         // given
         FileQueueService fileQueueService = spy(FileQueueService.class);
+        File mockFile = mock(File.class);
 
         doThrow(IOException.class).when(fileQueueService).getLinesFromFileMessages(any());
+        doReturn(mockFile).when(fileQueueService).getNewMessagesFile(any());
+        doReturn(mockFile).when(fileQueueService).getMessagesFile(any());
+        doReturn(mockFile).when(fileQueueService).getLockFile(any());
         doNothing().when(fileQueueService).lock(any());
         doNothing().when(fileQueueService).unlock(any());
 
