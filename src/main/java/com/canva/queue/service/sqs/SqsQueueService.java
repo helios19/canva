@@ -44,6 +44,8 @@ public class SqsQueueService implements QueueService {
 
     /**
      * {@inheritDoc}
+     *
+     * Note that this method pulls only the first top message among the list of messages returned by SQS client.
      */
     @Override
     public MessageQueue pull(String queueUrl) {
@@ -53,12 +55,12 @@ public class SqsQueueService implements QueueService {
             LOG.info("no message found from queueUrl '" + queueUrl + "'");
         }
 
-        return message.isPresent() ? ImmutableMessageQueue.of(
+        return ImmutableMessageQueue.of(
                 null,
                 message.get().getReceiptHandle(),
                 message.get().getMessageId(),
                 null,
-                message.get().getBody()) : null;
+                message.get().getBody());
     }
 
     /**
