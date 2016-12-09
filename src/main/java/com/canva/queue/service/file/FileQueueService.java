@@ -246,11 +246,14 @@ public class FileQueueService extends AbstractQueueService {
                     return null;
                 }
 
-                // create messageQueue
-                messageQueue = MessageQueue.createFromLine(visibleLineToPull.get());
+                // change pulled message visibility
+                String updatedMessageLine = updateMessageVisibility(visibleLineToPull.get(), visibilityTimeoutInSecs);
 
-                // change pulled message visibility and write to new file
-                changeVisibilityAndWriteToFile(streamSupplier, writer, visibleLineToPull.get());
+                // write new visibility message to file
+                writeNewVisibilityToFile(streamSupplier, writer, updatedMessageLine);
+
+                // create messageQueue object
+                messageQueue = MessageQueue.createFromLine(updatedMessageLine);
             }
 
             // replace file messages with new file
@@ -323,31 +326,32 @@ public class FileQueueService extends AbstractQueueService {
     }
 
     /**
-     * Changes visibility of a message and writes the updated message line to new file messages. This method will
-     * be useful mainly for the {@link #pull(String)} method after having identified the message line to pull.
+     * Writes the updated message line to new file messages. This method will be useful mainly for
+     * the {@link #pull(String)} method after having identified the message line to pull.
      *
      * @param streamSupplier Stream supplier instance bound to the current file messages to read from
      * @param writer Writer instance bound to the new file messages
-     * @param visibleLineToPull Message line to update visibility timestamp and write to file
+     * @param visibleLineToWrite Message line with updated visibility timestamp to write to file
      * @throws IllegalStateException If message id cannot be retrieved from message line
      */
-    protected void changeVisibilityAndWriteToFile(Supplier<Stream<String>> streamSupplier, PrintWriter writer, String visibleLineToPull) {
+    protected void writeNewVisibilityToFile(Supplier<Stream<String>> streamSupplier, PrintWriter writer, String visibleLineToWrite) {
         // retrieve message id
-        final String messageId = retrieveMessageId(visibleLineToPull)
-                .orElseThrow(() -> new IllegalStateException("no message identifier found for record '" + visibleLineToPull + "'"));
+        final String messageId = retrieveMessageId(visibleLineToWrite)
+                .orElseThrow(() -> new IllegalStateException("no message identifier found for record '" + visibleLineToWrite + "'"));
 
         streamSupplier
                 .get()
                 .forEach(s -> {
 
-                    // update visibility timestamp
+                    // update visible line with new timestamp
                     if (s.contains(messageId)) {
-                        s = updateMessageVisibility(s, visibilityTimeoutInSecs);
+                        s = visibleLineToWrite;
                     }
 
                     // write to file
                     writer.println(s);
                 });
+
     }
 
     /**
