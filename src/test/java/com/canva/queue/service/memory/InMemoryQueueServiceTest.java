@@ -3,6 +3,7 @@ package com.canva.queue.service.memory;
 import com.canva.queue.message.MessageQueue;
 import org.hamcrest.core.IsNull;
 import org.joda.time.DateTime;
+import org.joda.time.DateTimeUtils;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -18,6 +19,47 @@ import static org.mockito.Mockito.*;
 
 
 public class InMemoryQueueServiceTest {
+
+    @Test
+    public void shouldDetectWhenVisibilityTimeoutExpired() throws Exception {
+
+        // given
+        InMemoryQueueService.VisibilityMessageMonitor visibilityMessageMonitor = spy(new InMemoryQueueService().new VisibilityMessageMonitor());
+
+        // mock invisible message
+        MessageQueue inVisibleMessageQueue = mock(MessageQueue.class);
+
+        // set visibility timestamp far in the future to make the message invisible
+        long futureTimestamp = DateTime.now().plusHours(1).getMillis();
+        when(inVisibleMessageQueue.getVisibility()).thenReturn(futureTimestamp);
+
+        // add invisible message to map queue
+        ConcurrentLinkedQueue queueWithInvisibleMessage = new ConcurrentLinkedQueue();
+        queueWithInvisibleMessage.offer(inVisibleMessageQueue);
+        ConcurrentHashMap<String, ConcurrentLinkedQueue<MessageQueue>> mapQueueWithInvisibleMessage = new ConcurrentHashMap<>();
+        mapQueueWithInvisibleMessage.put("myQueue", queueWithInvisibleMessage);
+
+        // return map queue with invisible message when getMessageQueue is invoked
+        doReturn(mapQueueWithInvisibleMessage).when(visibilityMessageMonitor).getMessageQueue();
+
+
+        // when
+
+        // first call should not pull the message as the visibility timestamp is set to 1 hour in the future
+        visibilityMessageMonitor.checkMessageVisibility();
+        // second call should pull the message after having fixed the current system millis to 2 hours in the future
+        DateTimeUtils.setCurrentMillisFixed(DateTime.now().plusHours(2).getMillis());
+        visibilityMessageMonitor.checkMessageVisibility();
+
+
+        // then
+
+        // the invisible message should become visible only once during the second call
+        // to checkMessageVisibility() whereby its setVisibility() method is invoked
+        // to reset its value
+        then(inVisibleMessageQueue).should(times(4)).getVisibility();
+        then(inVisibleMessageQueue).should(times(1)).setVisibility(0L);
+    }
 
     @Test
     public void shouldPushMessageInMemoryQueue() throws Exception {
@@ -244,72 +286,6 @@ public class InMemoryQueueServiceTest {
         // then
         then(inMemoryQueueService).should(times(1)).fromUrl(any());
         then(inMemoryQueueService).should(times(0)).getMessagesFromQueue(any());
-    }
-
-    @Test
-    public void shouldResetMessageVisibility() throws Exception {
-
-        // given
-        InMemoryQueueService.VisibilityMessageMonitor visibilityMessageMonitor = spy(new InMemoryQueueService().new VisibilityMessageMonitor());
-
-        // mock map queue
-        ConcurrentHashMap<String, ConcurrentLinkedQueue<MessageQueue>> mockMapQueue = mock(ConcurrentHashMap.class);
-
-        // visible map queue and message
-        MessageQueue visibleMessageQueue = mock(MessageQueue.class);
-        when(visibleMessageQueue.getVisibility()).thenReturn(0L);
-        ConcurrentLinkedQueue queueWithVisibleMessage = new ConcurrentLinkedQueue();
-        queueWithVisibleMessage.offer(visibleMessageQueue);
-
-        ConcurrentHashMap<String, ConcurrentLinkedQueue<MessageQueue>> messageQueueWithVisibleMessage = new ConcurrentHashMap<>();
-        messageQueueWithVisibleMessage.put("myQueue", queueWithVisibleMessage);
-
-        // invisible map queue and message
-        long pastTimestamp = DateTime.now().minusSeconds(1).getMillis();
-        MessageQueue inVisibleMessageQueue = mock(MessageQueue.class);
-        when(inVisibleMessageQueue.getVisibility()).thenReturn(pastTimestamp);
-        ConcurrentLinkedQueue queueWithInvisibleMessage = new ConcurrentLinkedQueue();
-        queueWithVisibleMessage.offer(inVisibleMessageQueue);
-
-        ConcurrentHashMap<String, ConcurrentLinkedQueue<MessageQueue>> messageQueueWithInvisibleMessage = new ConcurrentHashMap<>();
-        messageQueueWithInvisibleMessage.put("myQueue", queueWithInvisibleMessage);
-
-
-        // when call getMessageQueue return queue mock
-        doReturn(mockMapQueue).when(visibilityMessageMonitor).getMessageQueue();
-
-        // when invoking mock message queue return first a queue with visible messages
-        // and then another queue with invisible messages
-        when(mockMapQueue.keySet()).thenReturn(
-                // first call return a message queue with only visible message
-                messageQueueWithVisibleMessage.keySet(),
-                // second call return a message queue with invisible message
-                messageQueueWithInvisibleMessage.keySet());
-
-        when(mockMapQueue.get(anyString())).thenReturn(
-                // first call return a message queue with only visible message
-                messageQueueWithVisibleMessage.get("myQueue"),
-                // second call return a message queue with invisible message
-                messageQueueWithInvisibleMessage.get("myQueue"));
-
-
-        // when
-
-        // first call -> with visible message
-        visibilityMessageMonitor.checkMessageVisibility();
-        // second call -> with invisible message where their visibility timestamp exceeds timeout
-        visibilityMessageMonitor.checkMessageVisibility();
-
-
-        // then
-
-        // visible message should not get its visibility reset
-        then(inVisibleMessageQueue).should(times(2)).getVisibility();
-        then(inVisibleMessageQueue).should(times(1)).setVisibility(0L);
-        // invisible message should have its visibility reset to 0L
-        then(visibleMessageQueue).should(times(1)).getVisibility();
-        then(visibleMessageQueue).should(times(0)).setVisibility(0L);
-
     }
 
 
