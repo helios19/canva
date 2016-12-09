@@ -157,10 +157,14 @@ public class FileQueueService extends AbstractQueueService {
      * this method, a thread and process lock are applied on a per-queue basis leaving other threads/processes free to
      * access any other queue without blocking.
      *
+     * <p>This method accepts a {@code queueUrl} parameter which must be a valid url slash-separated ('/') and ending
+     * with the queueName, e.g: "http://sqs.us-east-2.amazonaws.com/123456789012/MyQueue".
+     *
      * @param queueUrl  Queue url holding the queue name to extract
      * @param delaySeconds  Message visibility delay in seconds
      * @param messageBody  Message body to push
      * @throws QueueServiceException Thrown in case of issue while pushing the message to the queue
+     * @throws IllegalArgumentException If queue url is invalid
      */
     @Override
     public void push(String queueUrl, Integer delaySeconds, String messageBody) {
@@ -207,6 +211,9 @@ public class FileQueueService extends AbstractQueueService {
      * using a concurrent map that relates a {@link ReentrantLock} lock instance to a specific queue name. When invoking
      * this method, a thread and process locks are applied on a per-queue basis leaving other threads/processes free to
      * access any other queue without blocking.
+     *
+     * <p>This method accepts a {@code queueUrl} parameter which must be a valid url slash-separated ('/') and ending
+     * with the queueName, e.g: "http://sqs.us-east-2.amazonaws.com/123456789012/MyQueue".
      *
      * @param queueUrl  Queue url holding the queue name to extract
      * @return  MessageQueue instance made up with message body and receiptHandle identifier used to delete the message
@@ -283,12 +290,19 @@ public class FileQueueService extends AbstractQueueService {
      * this method, a thread and process locks are applied on a per-queue basis leaving other threads/processes free to
      * access any other queue without blocking.
      *
+     * <p>This method accepts a {@code queueUrl} parameter which must be a valid url slash-separated ('/') and ending
+     * with the queueName, e.g: "http://sqs.us-east-2.amazonaws.com/123456789012/MyQueue".
+     *
      * @param queueUrl  Queue url holding the queue name to extract
      * @param receiptHandle  Receipt handle identifier
-     * @throws QueueServiceException Thrown in case of issue while deleting the message from the queue
+     * @throws QueueServiceException In case of issue while deleting the message from the queue
+     * @throws IllegalArgumentException If queue url is invalid
+     * @throws NullPointerException If receipt handle is null
      */
     @Override
     public void delete(String queueUrl, String receiptHandle) {
+        requireNonNull(receiptHandle, "receipt handle must not be null");
+
         String queue = fromUrl(queueUrl);
         File fileMessages = getMessagesFile(queue);
         File newFileMessages = getNewMessagesFile(queue);

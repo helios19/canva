@@ -76,9 +76,13 @@ public class InMemoryQueueService extends AbstractQueueService {
      * visibility = currentTimeMillis + delayInMillis
      * }</pre>
      *
+     * <p>This method accepts a {@code queueUrl} parameter which must be a valid url slash-separated ('/') and ending
+     * with the queueName, e.g: "http://sqs.us-east-2.amazonaws.com/123456789012/MyQueue".
+     *
      * @param queueUrl  QueueU url holding the queue name to extract
      * @param delaySeconds  Message visibility delay in seconds
      * @param messageBody  Message body to push
+     * @throws IllegalArgumentException If queue url is invalid
      */
     @Override
     public void push(String queueUrl, Integer delaySeconds, String messageBody) {
@@ -105,6 +109,9 @@ public class InMemoryQueueService extends AbstractQueueService {
      * <p>Note that any other messages with visibility > 0L will be checked by the {@link VisibilityMessageMonitor} and
      * reset to 0L if their invisibility period has expired.
      *
+     * <p>This method accepts a {@code queueUrl} parameter which must be a valid url slash-separated ('/') and ending
+     * with the queueName, e.g: "http://sqs.us-east-2.amazonaws.com/123456789012/MyQueue".
+     *
      * @param queueUrl  Queue url holding the queue name to extract
      * @return  MessageQueue instance made up with message body and receiptHandle identifier used to delete the message
      * @throws  IllegalArgumentException If queue name cannot be extracted from queueUrl argument
@@ -127,11 +134,18 @@ public class InMemoryQueueService extends AbstractQueueService {
     /**
      * Deletes a message from the queue given {@code queueUrl} and {@code receiptHandle} arguments.
      *
+     * <p>This method accepts a {@code queueUrl} parameter which must be a valid url slash-separated ('/') and ending
+     * with the queueName, e.g: "http://sqs.us-east-2.amazonaws.com/123456789012/MyQueue".
+     *
      * @param queueUrl  Queue url holding the queue name to extract
      * @param receiptHandle  Receipt handle identifier
+     * @throws IllegalArgumentException If queue url is invalid
+     * @throws NullPointerException If receipt handle is null
      */
     @Override
     public void delete(String queueUrl, String receiptHandle) {
+        requireNonNull(receiptHandle, "receipt handle must not be null");
+
         String queue = fromUrl(queueUrl);
 
         ConcurrentLinkedQueue<MessageQueue> messageQueues = getMessagesFromQueue(queue);
